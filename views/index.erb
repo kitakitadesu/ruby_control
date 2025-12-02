@@ -1,0 +1,124 @@
+<h1>ESP-NOW Robot Control</h1>
+
+<form hx-post="/select_port" hx-target="#status">
+  <div class="control">
+    <label for="port">Select COM Port:</label>
+    <select id="port" name="port" hx-get="/ports" hx-trigger="load" hx-swap="innerHTML">
+      <option>Loading ports...</option>
+    </select>
+    <button hx-get="/ports" hx-target="#port" hx-swap="innerHTML">Refresh Ports</button>
+    <button type="submit">Open Port</button>
+  </div>
+</form>
+
+<form hx-post="/select_robot" hx-target="#status">
+  <div class="control">
+    <label for="robot">Select Robot:</label>
+    <select id="robot" name="robot" hx-get="/robots" hx-trigger="load" hx-swap="innerHTML">
+      <option>Loading robots...</option>
+    </select>
+    <button hx-post="/discovery" hx-target="#status">Refresh Robots</button>
+    <button type="submit">Select Robot</button>
+  </div>
+</form>
+
+<div class="control">
+  Speed: <span id="speed">50</span>
+  <button id="speed-down">-</button>
+  <button id="speed-up">+</button>
+</div>
+
+<div id="controls" tabindex="0">
+  <div id="key-w" class="key" style="top: 10px; left: 130px;">W</div>
+  <div id="key-a" class="key" style="top: 80px; left: 60px;">A</div>
+  <div id="key-s" class="key" style="top: 80px; left: 130px;">S</div>
+  <div id="key-d" class="key" style="top: 80px; left: 200px;">D</div>
+  <div id="key-q" class="key" style="top: 150px; left: 10px;">Q</div>
+  <div id="key-e" class="key" style="top: 150px; left: 250px;">E</div>
+  <div id="key-u" class="key" style="top: 220px; left: 10px;">U</div>
+  <div id="key-j" class="key" style="top: 220px; left: 130px;">J</div>
+  <div id="key-i" class="key" style="top: 220px; left: 200px;">I</div>
+  <div id="key-k" class="key" style="top: 220px; left: 250px;">K</div>
+</div>
+
+<div id="status" class="status"></div>
+
+<div id="serial-output" style="font-family: monospace; white-space: pre; border: 1px solid #ccc; height: 200px; overflow-y: scroll; margin-top: 10px; padding: 5px;"></div>
+
+<script>
+  const controls = document.getElementById('controls');
+  const speedSpan = document.getElementById('speed');
+  const statusDiv = document.getElementById('status');
+  const ws = new WebSocket('ws://' + window.location.host + '/ws');
+
+  ws.onopen = function(event) {
+    console.log('WebSocket connected');
+  };
+
+  ws.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    if (data.type === 'speed_update') {
+      speedSpan.innerText = data.speed;
+    } else if (data.type === 'status') {
+      statusDiv.innerText = data.message;
+    } else if (data.type === 'serial_output') {
+      const serialDiv = document.getElementById('serial-output');
+      serialDiv.innerText += data.message + '\n';
+      serialDiv.scrollTop = serialDiv.scrollHeight;
+      // Parse discovery replies
+      const match = data.message.match(/Discovery reply: (\w+) (.+)/);
+      if (match) {
+        const name = match[1];
+        const mac = match[2];
+        const robotSelect = document.getElementById('robot');
+        const existing = Array.from(robotSelect.options).find(opt => opt.value === name);
+        if (!existing) {
+          const option = document.createElement('option');
+          option.value = name;
+          option.text = `${name} (${mac})`;
+          robotSelect.appendChild(option);
+        }
+      }
+    }
+  };
+
+  ws.onclose = function(event) {
+    console.log('WebSocket closed');
+  };
+
+  document.getElementById('speed-down').addEventListener('click', function() {
+    ws.send(JSON.stringify({type: 'adjust_speed', direction: 'down'}));
+  });
+
+  document.getElementById('speed-up').addEventListener('click', function() {
+    ws.send(JSON.stringify({type: 'adjust_speed', direction: 'up'}));
+  });
+
+  document.addEventListener('keydown', (e) => {
+    const key = e.key.toLowerCase();
+    if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k', ',', '.', ' '].includes(key)) {
+      e.preventDefault();
+      if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k'].includes(key)) {
+        document.getElementById(`key-${key}`).classList.add('active');
+        ws.send(JSON.stringify({type: 'keydown', key: key}));
+      } else if (key === ',') {
+        ws.send(JSON.stringify({type: 'adjust_speed', direction: 'down'}));
+      } else if (key === '.') {
+        ws.send(JSON.stringify({type: 'adjust_speed', direction: 'up'}));
+      } else if (key === ' ') {
+        ws.send(JSON.stringify({type: 'stop'}));
+      }
+    }
+  });
+
+  document.addEventListener('keyup', (e) => {
+    const key = e.key.toLowerCase();
+    if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k'].includes(key)) {
+      e.preventDefault();
+      document.getElementById(`key-${key}`).classList.remove('active');
+      ws.send(JSON.stringify({type: 'keyup', key: key}));
+    }
+  });
+
+  controls.focus();
+</script>

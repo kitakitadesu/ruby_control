@@ -1,0 +1,30 @@
+[
+  {
+    "label": "Bundle Install",
+    "command": "bundle install",
+    "reveal": "always",
+    "reveal_target": "dock",
+    "hide": "never",
+    "show_summary": true,
+    "show_command": true
+  },
+  {
+    "label": "Run App",
+    "command": "bundle exec ruby app.rb",
+    "reveal": "always",
+    "reveal_target": "dock",
+    "hide": "never",
+    "show_summary": true,
+    "show_command": true,
+    "allow_concurrent_runs": false
+  },
+  {
+    "label": "Type Check",
+    "command": "bundle exec srb tc .",
+    "reveal": "always",
+    "reveal_target": "dock",
+    "hide": "never",
+    "show_summary": true,
+    "show_command": true
+  }
+]
