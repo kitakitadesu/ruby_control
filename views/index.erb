@@ -57,61 +57,79 @@
   const controls = document.getElementById('controls');
   const speedSpan = document.getElementById('speed');
   const statusDiv = document.getElementById('status');
-  const ws = new WebSocket('ws://' + window.location.host + '/ws');
+  let ws;
 
-  ws.onopen = function(event) {
-    console.log('WebSocket connected');
-  };
+  function connectWebSocket() {
+    ws = new WebSocket('ws://' + window.location.host + '/ws');
 
-  ws.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    if (data.type === 'speed_update') {
-      speedSpan.innerText = data.speed;
-    } else if (data.type === 'servo_update') {
-      document.getElementById('servo1').value = data.servo1;
-      document.getElementById('servo1-value').innerText = data.servo1;
-      document.getElementById('servo2').value = data.servo2;
-      document.getElementById('servo2-value').innerText = data.servo2;
-    } else if (data.type === 'status') {
-      statusDiv.innerText = data.message;
-    } else if (data.type === 'serial_output') {
-      const serialDiv = document.getElementById('serial-output');
-      serialDiv.innerText += data.message + '\n';
-      serialDiv.scrollTop = serialDiv.scrollHeight;
-      // Parse discovery replies
-      const match = data.message.match(/Discovery reply: (\w+) (.+)/);
-      if (match) {
-        const name = match[1];
-        const mac = match[2];
-        const robotSelect = document.getElementById('robot');
-        const existing = Array.from(robotSelect.options).find(opt => opt.value === name);
-        if (!existing) {
-          const option = document.createElement('option');
-          option.value = name;
-          option.text = `${name} (${mac})`;
-          robotSelect.appendChild(option);
+    ws.onopen = function(event) {
+      console.log('WebSocket connected');
+      statusDiv.innerText = "WebSocket connected";
+    };
+
+    ws.onmessage = function(event) {
+      const data = JSON.parse(event.data);
+      console.log('WS message received:', data);
+      if (data.type === 'speed_update') {
+        speedSpan.innerText = data.speed;
+      } else if (data.type === 'servo_update') {
+        document.getElementById('servo1').value = data.servo1;
+        document.getElementById('servo1-value').innerText = data.servo1;
+        document.getElementById('servo2').value = data.servo2;
+        document.getElementById('servo2-value').innerText = data.servo2;
+      } else if (data.type === 'status') {
+        statusDiv.innerText = data.message;
+      } else if (data.type === 'serial_output') {
+        const serialDiv = document.getElementById('serial-output');
+        serialDiv.innerText += data.message + '\n';
+        serialDiv.scrollTop = serialDiv.scrollHeight;
+        // Parse discovery replies
+        const match = data.message.match(/Discovery reply: (\w+) (.+)/);
+        if (match) {
+          const name = match[1];
+          const mac = match[2];
+          const robotSelect = document.getElementById('robot');
+          const existing = Array.from(robotSelect.options).find(opt => opt.value === name);
+          if (!existing) {
+            const option = document.createElement('option');
+            option.value = name;
+            option.text = `${name} (${mac})`;
+            robotSelect.appendChild(option);
+          }
         }
+      } else if (data.type === 'error') {
+        statusDiv.innerText = "Error: " + data.message;
       }
-    }
-  };
+    };
 
-  ws.onclose = function(event) {
-    console.log('WebSocket closed');
-  };
+    ws.onclose = function(event) {
+      console.log('WebSocket closed. Reconnecting in 1s...');
+      statusDiv.innerText = "WebSocket disconnected. Reconnecting...";
+      setTimeout(connectWebSocket, 1000);
+    };
+  }
+
+  connectWebSocket();
+
+  function sendWs(data) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
+    }
+  }
 
   document.getElementById('speed-down').addEventListener('click', function() {
-    ws.send(JSON.stringify({type: 'adjust_speed', direction: 'down'}));
+    sendWs({type: 'adjust_speed', direction: 'down'});
   });
 
   document.getElementById('speed-up').addEventListener('click', function() {
-    ws.send(JSON.stringify({type: 'adjust_speed', direction: 'up'}));
+    sendWs({type: 'adjust_speed', direction: 'up'});
   });
 
   document.getElementById('update-servos').addEventListener('click', function() {
     const servo1Value = document.getElementById('servo1').value;
     const servo2Value = document.getElementById('servo2').value;
-    ws.send(JSON.stringify({type: 'set_servo', servo: 1, value: servo1Value}));
-    ws.send(JSON.stringify({type: 'set_servo', servo: 2, value: servo2Value}));
+    sendWs({type: 'set_servo', servo: 1, value: servo1Value});
+    sendWs({type: 'set_servo', servo: 2, value: servo2Value});
   });
 
   document.getElementById('servo1').addEventListener('input', function() {
@@ -128,21 +146,21 @@
       e.preventDefault();
       if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j'].includes(key)) {
         document.getElementById(`key-${key}`).classList.add('active');
-        ws.send(JSON.stringify({type: 'keydown', key: key}));
+        sendWs({type: 'keydown', key: key});
       } else if (key === 'i') {
-        ws.send(JSON.stringify({type: 'adjust_servo', servo: 1, direction: 'up'}));
+        sendWs({type: 'adjust_servo', servo: 1, direction: 'up'});
       } else if (key === 'k') {
-        ws.send(JSON.stringify({type: 'adjust_servo', servo: 1, direction: 'down'}));
+        sendWs({type: 'adjust_servo', servo: 1, direction: 'down'});
       } else if (key === 'o') {
-        ws.send(JSON.stringify({type: 'adjust_servo', servo: 2, direction: 'up'}));
+        sendWs({type: 'adjust_servo', servo: 2, direction: 'up'});
       } else if (key === 'l') {
-        ws.send(JSON.stringify({type: 'adjust_servo', servo: 2, direction: 'down'}));
+        sendWs({type: 'adjust_servo', servo: 2, direction: 'down'});
       } else if (key === ',') {
-        ws.send(JSON.stringify({type: 'adjust_speed', direction: 'down'}));
+        sendWs({type: 'adjust_speed', direction: 'down'});
       } else if (key === '.') {
-        ws.send(JSON.stringify({type: 'adjust_speed', direction: 'up'}));
+        sendWs({type: 'adjust_speed', direction: 'up'});
       } else if (key === ' ') {
-        ws.send(JSON.stringify({type: 'stop'}));
+        sendWs({type: 'stop'});
       }
     }
   });
@@ -154,7 +172,7 @@
       if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k', 'o', 'l'].includes(key)) {
         document.getElementById(`key-${key}`)?.classList.remove('active');
         if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j'].includes(key)) {
-          ws.send(JSON.stringify({type: 'keyup', key: key}));
+          sendWs({type: 'keyup', key: key});
         }
       }
     }

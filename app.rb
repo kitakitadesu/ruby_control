@@ -10,6 +10,7 @@ class ESPNOWWebUI < Sinatra::Base
   extend T::Sig
 
   @@serial_port = T.let(nil, T.nilable(SerialPort))
+  @@current_port = T.let(nil, T.nilable(String))
   @@current_robot = T.let(nil, T.nilable(String))
   @@speed = T.let(50, Integer)
   @@servo1 = T.let(90, Integer)
@@ -17,6 +18,9 @@ class ESPNOWWebUI < Sinatra::Base
   @@pressed_keys = T.let({}, T::Hash[String, T::Boolean])
   @@ws_clients = T.let([], T::Array[Faye::WebSocket])
   @@discovered_robots = T.let({}, T::Hash[String, String])
+  @@command_queue = T.let(Queue.new, Queue)
+  @@queue_mutex = T.let(Mutex.new, Mutex)
+  @@serial_running = T.let(false, T::Boolean)
 
   ROBOT_MACS = T.let({
     'RobotA' => '30:83:98:93:07:F1',
@@ -48,6 +52,7 @@ class ESPNOWWebUI < Sinatra::Base
       ws = Faye::WebSocket.new(env)
 
       ws.on :open do
+        puts "DEBUG: WebSocket client connected"
         @@ws_clients << ws
       end
 
@@ -90,7 +95,7 @@ class ESPNOWWebUI < Sinatra::Base
             @@servo2 = 0 if @@servo2 < 0
             @@servo2 = 180 if @@servo2 > 180
           end
-          self.class.send_command(ws) if @@pressed_keys.any?
+          self.class.send_stop(ws)
           self.class.broadcast_servo_update
         when 'set_servo'
           servo = data['servo']
@@ -100,6 +105,7 @@ class ESPNOWWebUI < Sinatra::Base
           elsif servo == 2
             @@servo2 = value
           end
+          self.class.send_stop(ws)
           self.class.broadcast_servo_update
         when 'stop'
           self.class.send_stop(ws)
@@ -107,6 +113,7 @@ class ESPNOWWebUI < Sinatra::Base
       end
 
       ws.on :close do
+        puts "DEBUG: WebSocket client disconnected"
         @@ws_clients.delete(ws)
       end
 
@@ -123,11 +130,48 @@ class ESPNOWWebUI < Sinatra::Base
       "Error: No port selected"
     elsif !File.exist?(port)
       "Error: Port #{port} does not exist"
+    elsif @@serial_port && @@current_port == port
+      self.class.start_serial_handler
+      message = "Port #{port} is already open"
+      puts "DEBUG: Broadcasting status to #{@@ws_clients.size} clients: #{message}"
+      @@ws_clients.each do |ws|
+        begin
+          ws.send({type: 'status', message: message}.to_json)
+        rescue => e
+          puts "DEBUG: Failed to send status to client: #{e.message}"
+          @@ws_clients.delete(ws)
+        end
+      end
+      message
     else
       begin
+        if @@serial_running
+          puts "DEBUG: Stopping existing serial thread"
+          @@serial_running = false
+          sleep 0.1 # Allow thread to exit
+        end
+        if @@serial_port
+          puts "DEBUG: Closing existing serial port"
+          @@serial_port.close rescue nil
+          @@serial_port = nil
+          @@current_port = nil
+        end
+        puts "DEBUG: Opening serial port #{port}"
         @@serial_port = SerialPort.new(port, 115200)
-        self.class.start_serial_reader
-        "Port #{port} opened successfully"
+        @@current_port = port
+        @@serial_port.read_timeout = 100 # 100ms timeout
+        self.class.start_serial_handler
+        message = "Port #{port} opened successfully"
+        puts "DEBUG: Broadcasting status to #{@@ws_clients.size} clients: #{message}"
+        @@ws_clients.each do |ws|
+          begin
+            ws.send({type: 'status', message: message}.to_json)
+          rescue => e
+            puts "DEBUG: Failed to send status to client: #{e.message}"
+            @@ws_clients.delete(ws)
+          end
+        end
+        message
       rescue => e
         "Error opening port: #{e.message}"
       end
@@ -138,34 +182,72 @@ class ESPNOWWebUI < Sinatra::Base
     robot = params[:robot]
     puts "DEBUG: Robot received: #{robot.inspect}"
     if robot.nil? || robot.empty?
-      "Error: No robot selected"
+      message = "Error: No robot selected"
     elsif ROBOT_MACS[robot] || @@discovered_robots[robot]
       @@current_robot = robot
       mac = ROBOT_MACS[robot] || @@discovered_robots[robot]
-      "Robot #{robot} selected, MAC: #{mac}"
+      message = "Robot #{robot} selected, MAC: #{mac}"
     else
-      "Invalid robot"
+      message = "Invalid robot"
     end
+    puts "DEBUG: Broadcasting status to #{@@ws_clients.size} clients: #{message}"
+    @@ws_clients.each do |ws|
+      begin
+        ws.send({type: 'status', message: message}.to_json)
+      rescue => e
+        puts "DEBUG: Failed to send status to client: #{e.message}"
+        @@ws_clients.delete(ws)
+      end
+    end
+    message
   end
 
   post '/discovery' do
-    return "No port selected" unless @@serial_port
-    @@serial_port.write("discovery\n")
-    "Discovery sent"
+    if @@serial_port
+      @@command_queue.push("discovery\n")
+      message = "Discovery sent"
+    else
+      message = "No port selected"
+    end
+    puts "DEBUG: Broadcasting status to #{@@ws_clients.size} clients: #{message}"
+    @@ws_clients.each do |ws|
+      begin
+        ws.send({type: 'status', message: message}.to_json)
+      rescue => e
+        puts "DEBUG: Failed to send status to client: #{e.message}"
+        @@ws_clients.delete(ws)
+      end
+    end
+    message
   end
 
   post '/command' do
-    return "No port selected" unless @@serial_port
-    return "No robot selected" unless @@current_robot
+    if @@serial_port
+      if @@current_robot
+        cmd = params[:cmd]
+        speed = params[:speed] || @@speed
+        @@speed = speed.to_i if speed
 
-    cmd = params[:cmd]
-    speed = params[:speed] || @@speed
-    @@speed = speed.to_i if speed
-
-    mac = ROBOT_MACS[@@current_robot] || @@discovered_robots[@@current_robot]
-    full_cmd = "[#{mac}]#{cmd} #{speed} #{@@servo1} #{@@servo2}\n"
-    @@serial_port.write(full_cmd)
-    "Sent: #{full_cmd.strip}"
+        mac = ROBOT_MACS[@@current_robot] || @@discovered_robots[@@current_robot]
+        full_cmd = "[#{mac}]#{cmd} #{speed} #{@@servo1} #{@@servo2}\n"
+        @@command_queue.push(full_cmd)
+        message = "Sent: #{full_cmd.strip}"
+      else
+        message = "No robot selected"
+      end
+    else
+      message = "No port selected"
+    end
+    puts "DEBUG: Broadcasting status to #{@@ws_clients.size} clients: #{message}"
+    @@ws_clients.each do |ws|
+      begin
+        ws.send({type: 'status', message: message}.to_json)
+      rescue => e
+        puts "DEBUG: Failed to send status to client: #{e.message}"
+        @@ws_clients.delete(ws)
+      end
+    end
+    message
   end
 
   post '/adjust_speed' do
@@ -191,8 +273,8 @@ class ESPNOWWebUI < Sinatra::Base
       cmd = ''
       cmd += 'f' if @@pressed_keys['w']
       cmd += 'b' if @@pressed_keys['s']
-      cmd += 'l' if @@pressed_keys['a']
-      cmd += 'r' if @@pressed_keys['d']
+      cmd += 'ql' if @@pressed_keys['a']
+      cmd += 'qr' if @@pressed_keys['d']
       cmd += 'ql' if @@pressed_keys['q']
       cmd += 'qr' if @@pressed_keys['e']
       speed = @@speed
@@ -200,7 +282,7 @@ class ESPNOWWebUI < Sinatra::Base
 
     mac = T.must(ROBOT_MACS[@@current_robot] || @@discovered_robots[@@current_robot])
     full_cmd = "[#{mac}]#{cmd} #{speed} #{@@servo1} #{@@servo2}\n"
-    T.must(@@serial_port).write(full_cmd)
+    @@command_queue.push(full_cmd)
     ws.send({type: 'status', message: "Sent: #{full_cmd.strip}"}.to_json)
   end
 
@@ -211,23 +293,70 @@ class ESPNOWWebUI < Sinatra::Base
     @@pressed_keys.clear
     mac = T.must(ROBOT_MACS[@@current_robot] || @@discovered_robots[@@current_robot])
     full_cmd = "[#{mac}] 0 #{@@servo1} #{@@servo2}\n"
-    T.must(@@serial_port).write(full_cmd)
+    @@command_queue.push(full_cmd)
     ws.send({type: 'status', message: "Sent: #{full_cmd.strip}"}.to_json)
   end
 
   def self.broadcast_servo_update
+    puts "DEBUG: Broadcasting servo update to #{@@ws_clients.size} clients: servo1=#{@@servo1}, servo2=#{@@servo2}"
     @@ws_clients.each do |ws|
-      ws.send({type: 'servo_update', servo1: @@servo1, servo2: @@servo2}.to_json)
+      begin
+        ws.send({type: 'servo_update', servo1: @@servo1, servo2: @@servo2}.to_json)
+      rescue => e
+        puts "DEBUG: Failed to send servo update to client: #{e.message}"
+        @@ws_clients.delete(ws)
+      end
     end
   end
 
-  def self.start_serial_reader
+  def self.start_serial_handler
+    return if @@serial_running # Prevent multiple threads
+
+    puts "DEBUG: Starting serial handler thread"
+    @@serial_running = true
     Thread.new do
-      loop do
+      puts "DEBUG: Serial handler thread running"
+      while @@serial_running
         if @@serial_port
-          data = @@serial_port.read(100) rescue nil
-          puts "DEBUG: Serial read: #{data.inspect}" if data
+          # Write commands
+          @@queue_mutex.synchronize do
+            unless @@command_queue.empty?
+              cmd = @@command_queue.pop
+              begin
+                puts "DEBUG: Writing to serial: #{cmd.strip}"
+                @@serial_port.write(cmd)
+                @@serial_port.flush
+              rescue => e
+                puts "Serial write error: #{e.message}"
+                @@serial_port = nil
+                @@current_port = nil
+                @@serial_running = false
+                puts "DEBUG: Broadcasting serial error to #{@@ws_clients.size} clients: #{e.message}"
+                @@ws_clients.each do |ws|
+                  begin
+                    ws.send({type: 'error', message: "Serial port disconnected: #{e.message}"}.to_json)
+                  rescue => e2
+                    puts "DEBUG: Failed to send error to client: #{e2.message}"
+                    @@ws_clients.delete(ws)
+                  end
+                end
+              end
+            end
+          end
+
+          # Read responses
+          begin
+            if @@serial_port
+              data = @@serial_port.read(1024)
+            end
+          rescue => e
+            puts "DEBUG: Serial read error: #{e.message}"
+            data = nil
+          end
+
           if data && !data.empty?
+            puts "DEBUG: Serial read #{data.length} bytes: #{data.inspect}"
+
             if data.strip =~ /^Discovery reply: (\w+) (.+)$/
               name = $1
               mac = $2
@@ -235,14 +364,24 @@ class ESPNOWWebUI < Sinatra::Base
             end
             timestamp = Time.now.strftime("%H:%M:%S")
             message = "#{timestamp}: #{data.strip}"
-            puts "DEBUG: Broadcasting serial: #{message}"
+            # puts "DEBUG: Broadcasting serial: #{message}"
+            # puts "DEBUG: Broadcasting serial output to #{@@ws_clients.size} clients: #{data.strip}"
             @@ws_clients.each do |ws|
-              ws.send({type: 'serial_output', message: message}.to_json)
+              begin
+                ws.send({type: 'serial_output', message: message}.to_json)
+              rescue => e
+                puts "DEBUG: Failed to send serial output to client: #{e.message}"
+                @@ws_clients.delete(ws)
+              end
             end
           end
+        else
+          puts "DEBUG: Serial port is nil in thread loop"
+          sleep 1
         end
-        sleep 0.1
+        sleep 0.01
       end
+      puts "DEBUG: Serial handler thread exiting"
     end
   end
 end
