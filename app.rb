@@ -12,6 +12,8 @@ class ESPNOWWebUI < Sinatra::Base
   @@serial_port = T.let(nil, T.nilable(SerialPort))
   @@current_robot = T.let(nil, T.nilable(String))
   @@speed = T.let(50, Integer)
+  @@servo1 = T.let(90, Integer)
+  @@servo2 = T.let(90, Integer)
   @@pressed_keys = T.let({}, T::Hash[String, T::Boolean])
   @@ws_clients = T.let([], T::Array[Faye::WebSocket])
   @@discovered_robots = T.let({}, T::Hash[String, String])
@@ -76,6 +78,29 @@ class ESPNOWWebUI < Sinatra::Base
           end
           self.class.send_command(ws) if @@pressed_keys.any?
           ws.send({type: 'speed_update', speed: @@speed}.to_json)
+        when 'adjust_servo'
+          servo = data['servo']
+          direction = data['direction']
+          if servo == 1
+            @@servo1 += direction == 'up' ? 5 : -5
+            @@servo1 = 0 if @@servo1 < 0
+            @@servo1 = 180 if @@servo1 > 180
+          elsif servo == 2
+            @@servo2 += direction == 'up' ? 5 : -5
+            @@servo2 = 0 if @@servo2 < 0
+            @@servo2 = 180 if @@servo2 > 180
+          end
+          self.class.send_command(ws) if @@pressed_keys.any?
+          self.class.broadcast_servo_update
+        when 'set_servo'
+          servo = data['servo']
+          value = data['value'].to_i
+          if servo == 1
+            @@servo1 = value
+          elsif servo == 2
+            @@servo2 = value
+          end
+          self.class.broadcast_servo_update
         when 'stop'
           self.class.send_stop(ws)
         end
@@ -137,8 +162,8 @@ class ESPNOWWebUI < Sinatra::Base
     speed = params[:speed] || @@speed
     @@speed = speed.to_i if speed
 
-    mac = ROBOT_MACS[@@current_robot]
-    full_cmd = "[#{mac}]#{cmd} #{speed}\n"
+    mac = ROBOT_MACS[@@current_robot] || @@discovered_robots[@@current_robot]
+    full_cmd = "[#{mac}]#{cmd} #{speed} #{@@servo1} #{@@servo2}\n"
     @@serial_port.write(full_cmd)
     "Sent: #{full_cmd.strip}"
   end
@@ -160,23 +185,21 @@ class ESPNOWWebUI < Sinatra::Base
     return unless @@serial_port && @@current_robot
 
     if @@pressed_keys.empty?
-      cmd = 'stop'
+      cmd = ''
+      speed = 0
     else
       cmd = ''
       cmd += 'f' if @@pressed_keys['w']
       cmd += 'b' if @@pressed_keys['s']
-      cmd += 'ql' if @@pressed_keys['a']
-      cmd += 'qr' if @@pressed_keys['d']
+      cmd += 'l' if @@pressed_keys['a']
+      cmd += 'r' if @@pressed_keys['d']
       cmd += 'ql' if @@pressed_keys['q']
       cmd += 'qr' if @@pressed_keys['e']
-      cmd += 's1u' if @@pressed_keys['u']
-      cmd += 's1d' if @@pressed_keys['j']
-      cmd += 's2u' if @@pressed_keys['i']
-      cmd += 's2d' if @@pressed_keys['k']
+      speed = @@speed
     end
 
     mac = T.must(ROBOT_MACS[@@current_robot] || @@discovered_robots[@@current_robot])
-    full_cmd = "[#{mac}]#{cmd} #{@@speed}\n"
+    full_cmd = "[#{mac}]#{cmd} #{speed} #{@@servo1} #{@@servo2}\n"
     T.must(@@serial_port).write(full_cmd)
     ws.send({type: 'status', message: "Sent: #{full_cmd.strip}"}.to_json)
   end
@@ -187,9 +210,15 @@ class ESPNOWWebUI < Sinatra::Base
 
     @@pressed_keys.clear
     mac = T.must(ROBOT_MACS[@@current_robot] || @@discovered_robots[@@current_robot])
-    full_cmd = "[#{mac}]stop #{@@speed}\n"
+    full_cmd = "[#{mac}] 0 #{@@servo1} #{@@servo2}\n"
     T.must(@@serial_port).write(full_cmd)
     ws.send({type: 'status', message: "Sent: #{full_cmd.strip}"}.to_json)
+  end
+
+  def self.broadcast_servo_update
+    @@ws_clients.each do |ws|
+      ws.send({type: 'servo_update', servo1: @@servo1, servo2: @@servo2}.to_json)
+    end
   end
 
   def self.start_serial_reader

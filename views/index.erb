@@ -28,6 +28,12 @@
   <button id="speed-up">+</button>
 </div>
 
+<div class="control">
+  Servo1: <input type="range" id="servo1" min="0" max="180" value="90"> <span id="servo1-value">90</span>
+  Servo2: <input type="range" id="servo2" min="0" max="180" value="90"> <span id="servo2-value">90</span>
+  <button id="update-servos">Update Servos</button>
+</div>
+
 <div id="controls" tabindex="0">
   <div id="key-w" class="key" style="top: 10px; left: 130px;">W</div>
   <div id="key-a" class="key" style="top: 80px; left: 60px;">A</div>
@@ -39,6 +45,8 @@
   <div id="key-j" class="key" style="top: 220px; left: 130px;">J</div>
   <div id="key-i" class="key" style="top: 220px; left: 200px;">I</div>
   <div id="key-k" class="key" style="top: 220px; left: 250px;">K</div>
+  <div id="key-o" class="key" style="top: 220px; left: 320px;">O</div>
+  <div id="key-l" class="key" style="top: 220px; left: 370px;">L</div>
 </div>
 
 <div id="status" class="status"></div>
@@ -59,6 +67,11 @@
     const data = JSON.parse(event.data);
     if (data.type === 'speed_update') {
       speedSpan.innerText = data.speed;
+    } else if (data.type === 'servo_update') {
+      document.getElementById('servo1').value = data.servo1;
+      document.getElementById('servo1-value').innerText = data.servo1;
+      document.getElementById('servo2').value = data.servo2;
+      document.getElementById('servo2-value').innerText = data.servo2;
     } else if (data.type === 'status') {
       statusDiv.innerText = data.message;
     } else if (data.type === 'serial_output') {
@@ -94,13 +107,36 @@
     ws.send(JSON.stringify({type: 'adjust_speed', direction: 'up'}));
   });
 
+  document.getElementById('update-servos').addEventListener('click', function() {
+    const servo1Value = document.getElementById('servo1').value;
+    const servo2Value = document.getElementById('servo2').value;
+    ws.send(JSON.stringify({type: 'set_servo', servo: 1, value: servo1Value}));
+    ws.send(JSON.stringify({type: 'set_servo', servo: 2, value: servo2Value}));
+  });
+
+  document.getElementById('servo1').addEventListener('input', function() {
+    document.getElementById('servo1-value').innerText = this.value;
+  });
+
+  document.getElementById('servo2').addEventListener('input', function() {
+    document.getElementById('servo2-value').innerText = this.value;
+  });
+
   document.addEventListener('keydown', (e) => {
     const key = e.key.toLowerCase();
-    if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k', ',', '.', ' '].includes(key)) {
+    if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k', 'o', 'l', ',', '.', ' '].includes(key)) {
       e.preventDefault();
-      if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k'].includes(key)) {
+      if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j'].includes(key)) {
         document.getElementById(`key-${key}`).classList.add('active');
         ws.send(JSON.stringify({type: 'keydown', key: key}));
+      } else if (key === 'i') {
+        ws.send(JSON.stringify({type: 'adjust_servo', servo: 1, direction: 'up'}));
+      } else if (key === 'k') {
+        ws.send(JSON.stringify({type: 'adjust_servo', servo: 1, direction: 'down'}));
+      } else if (key === 'o') {
+        ws.send(JSON.stringify({type: 'adjust_servo', servo: 2, direction: 'up'}));
+      } else if (key === 'l') {
+        ws.send(JSON.stringify({type: 'adjust_servo', servo: 2, direction: 'down'}));
       } else if (key === ',') {
         ws.send(JSON.stringify({type: 'adjust_speed', direction: 'down'}));
       } else if (key === '.') {
@@ -113,10 +149,14 @@
 
   document.addEventListener('keyup', (e) => {
     const key = e.key.toLowerCase();
-    if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k'].includes(key)) {
+    if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k', 'o', 'l'].includes(key)) {
       e.preventDefault();
-      document.getElementById(`key-${key}`).classList.remove('active');
-      ws.send(JSON.stringify({type: 'keyup', key: key}));
+      if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j', 'i', 'k', 'o', 'l'].includes(key)) {
+        document.getElementById(`key-${key}`)?.classList.remove('active');
+        if (['w', 'a', 's', 'd', 'q', 'e', 'u', 'j'].includes(key)) {
+          ws.send(JSON.stringify({type: 'keyup', key: key}));
+        }
+      }
     }
   });
 
